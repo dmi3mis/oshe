@@ -1,0 +1,26 @@
+github_sshkey_url: https://github.com/dmi3mis.keys
+
+postfix_conf:
+  myhostname: host.ovirt.test
+  mydomain: ovirt.test
+  relayhost: ovirt.test
+  myorigin: $mydomain
+  relay_domains: $mydestination
+  previous: replaced
+  inet_interfaces: all
+  inet_protocols: ipv4
+  mydestination: $myhostname, localhost.$mydomain, localhost, $mydomain
+  home_mailbox: Maildir/
+  smtpd_banner: $myhostname ESMTP
+  disable_vrfy_command: yes
+  message_size_limit: 10240000
+
+postfix_backup: true
+postfix_backup_multiple: true
+postfix_manage_selinux: true
+postfix_manage_firewall: true
+
+
+# NFS server vars
+
+nfs_export_path: /var/lib/ovirt-share

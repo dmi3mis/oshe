@@ -1,0 +1,15 @@
+$TTL 86400;
+ovirt.test. IN  SOA ns.ovirt.test. root.ovirt.test. (
+                                2023022200      ; serial number
+                                1H              ; refresh slave
+                                5M              ; retry query
+                                1W              ; expire
+                                1M              ; negative TTL
+)
+
+@			IN  NS ns.ovirt.test.
+@			IN  MX 10 host.ovirt.test.
+			IN  A  192.168.1.211
+ns			IN  A  192.168.1.211
+host			IN  A  192.168.1.211
+he			IN  A  192.168.1.50

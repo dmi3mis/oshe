@@ -1,0 +1,2 @@
+host.ovirt.test ansible_connection=local ansible_host=192.168.1.211
+he.ovirt.test ansible_host=192.168.1.50

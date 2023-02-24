@@ -1,0 +1,251 @@
+---
+- name: Test and prepare managed host
+  hosts: host.ovirt.test
+  vars_files:
+    - vars.yml
+  tasks:
+
+
+    - name: Set hostname as stated in inventory
+      ansible.builtin.hostname:
+        name: "{{ inventory_hostname }}"
+
+    - name: Make sure we have a 'wheel' group
+      group:
+        name: wheel
+        state: present
+
+    - name: Add sudoers users to wheel group
+      tags: users
+      user:
+        name: user
+        groups: wheel
+        append: yes
+        state: present
+        createhome: yes
+
+    - name: Set authorized keys taken from url
+      tags: ssh
+      become: False
+      ansible.posix.authorized_key:
+        user: user
+        state: present
+        key: "{{ github_sshkey_url }}"
+        manage_dir: True
+
+    - name: Allow 'wheel' group to have passwordless sudo
+      tags: sudo
+      lineinfile:
+       dest: /etc/sudoers
+       state: present
+       regexp: '^%wheel'
+       line: '%wheel ALL=(ALL) NOPASSWD: ALL'
+       validate: 'visudo -cf %s'
+
+    - name: Add the inventory into /etc/hosts
+      tags: hosts
+      lineinfile:
+        dest: /etc/hosts
+        regexp: '.*{{ item }}$'
+        line: "{{ hostvars[item]['ansible_host'] }} {{ hostvars[item]['inventory_hostname'] }} {{ hostvars[item]['inventory_hostname_short'] }}" 
+        state: present
+      when: hostvars[item]['ansible_host'] is defined
+      with_items:
+        - "{{ groups['all'] }}"
+
+    - name: Get my ip address
+      ansible.builtin.shell:
+        cmd: hostname -i
+      register: mydefaultip
+
+    - name: latest version of dnsmasq and firewalld is installed
+      tags: packages
+      yum:
+        name:
+         - bind
+         - firewalld
+        state: latest
+
+    - name: Replace a localhost to all in named.conf
+      tags: dns
+      ansible.builtin.lineinfile:
+        path: /etc/named.conf
+        line: '        listen-on port 53 { 192.168.1.211; localhost; };'
+        regexp: 'listen-on port 53 { 127.0.0.1; };'
+
+    - name: Configure bind package with forward and reverse zone
+      tags: dns
+      ansible.builtin.blockinfile:
+        path: /etc/named.conf
+        block: |
+          zone "ovirt.test" IN {
+          type master;
+          file "ovirt.test.zone";
+          allow-update { none; };
+          };
+          
+          zone "1.168.192.in-addr.arpa" IN {
+          type master;
+          file "ovirt.test.rr.zone";
+          allow-update { none; };
+          };
+    - name: copy forward and reverse zone files
+      tags: dns
+      copy:
+        dest: /var/named
+        src: "{{ item }}"
+      loop:
+        - ovirt.test.zone
+        - ovirt.test.rr.zone
+      
+
+    - name: firewalld and dnsmasq service is enabled and running
+      tags: services
+      ansible.builtin.service:
+        name: "{{ item }}"
+        enabled: true
+        state: restarted
+      loop:
+        - named
+        - firewalld
+
+    - name: firewalld permits access to dns service
+      tags: firewall
+      ansible.posix.firewalld:
+        service: dns
+        permanent: true
+        state: enabled
+        immediate: true
+
+    - name: Configure resolving thru local dns
+      tags: dns
+      ansible.builtin.shell: |
+        nmcli connection modify System\ enps0 ipv4.ignore-auto-dns true
+        nmcli connection modify System\ enps0 ipv4.dns localhost
+        nmcli connection up System\ enp3s0
+        
+
+- name: Postfix configure
+  hosts: host.ovirt.test
+  vars_files:
+    - vars.yml
+  tasks:
+    - name:  Mailbox storage to Maildir in home folder for MUA like mutt and mailx
+      ansible.builtin.copy:
+        dest: /etc/profile.d/mail.sh
+        content: |
+          export MAIL=$HOME/Maildir    
+  roles:
+    - linux-system-roles.postfix
+
+- name: Install NFS Server to configure shared storage. nfs variant
+  hosts: host.ovirt.test
+  vars_files:
+    - vars.yml
+
+  tasks:
+    - name: Ensure group "kvm" group exists with correct gid
+      ansible.builtin.group:
+        name: kvm
+        state: present
+        gid: 36
+
+    - name: Ensure thast vdsm user exist
+      ansible.builtin.user:
+        name: vdsm
+        shell: /bin/false
+        groups: kvm
+        append: yes
+        uid: 36
+        group: 36
+        create_home: true
+
+    - name: Ensure that nfs storage directory {{ nfs_export_path }} created.
+      tags: storage, nfs
+      ansible.builtin.file:
+        path: "{{ nfs_export_path }}"
+        state: directory
+        mode: '0755'
+        group: kvm
+        owner: vdsm
+
+    - name: Ensure that nfs-utils and rpcbind are installed and latest
+      tags: package, storage
+      ansible.builtin.yum:
+        state: latest
+        name: 
+         - nfs-utils
+         - rpcbind
+
+    - name: Enable access to nfs and other old services enabled in firewalld
+      tags: firewall, storage
+      ansible.posix.firewalld:
+        service: "{{ item }}"
+        permanent: true
+        state: enabled
+        immediate: true
+      loop:
+        - nfs
+        - nfs3
+        - mountd
+        - rpc-bind
+
+    - name: Ensure that nfs-server and rpc-bind services is enabled and running
+      tags: services
+      ansible.builtin.service:
+        name: "{{ item }}"
+        enabled: true
+        state: started
+      loop:
+        - nfs-server
+        - rpcbind
+
+    - name: Export {{ nfs_export_path }} directory with NFS
+      tags: storage, nfs
+      ansible.builtin.copy:
+        dest: /etc/exports
+        content: |
+          {{ nfs_export_path }} *(rw,no_root_squash)
+    
+    - name: Reread nfs table after NFS export
+      tags: storage, nfs
+      ansible.builtin.shell:
+        cmd: exportfs -r
+    
+    - name: Test if nfs is accessible
+      tags: storage, nfs
+      ansible.builtin.shell:
+        cmd: showmount -e {{ ansible_ssh_host }}
+      changed_when: false
+      register: register_var
+      failed_when: not register_var.stdout  is search(nfs_export_path)
+
+    - name: Display results of test
+      tags: storage, nfs, test
+      ansible.builtin.debug:
+        var: register_var
+
+
+- name: Ensure that nessesary packages for ovirt Hosted Engine are installed.
+  hosts: localhost
+  connection: local
+  tasks:
+
+    - name: Ensure that epel-release is installed and latest version
+      ansible.builtin.yum:
+        name: epel-release
+        state: latest
+
+    - name: Ensure that centos-release-ovirt45 is installed and latest version
+      ansible.builtin.yum:
+        name: centos-release-ovirt45
+        state: latest
+
+    - name: Ensure that centos-release-ovirt45 and python39-jmespath is installed and latest version
+      ansible.builtin.yum:
+        name: 
+          - ovirt-hosted-engine-setup
+          - python39-jmespath
+        state: latest
+
+

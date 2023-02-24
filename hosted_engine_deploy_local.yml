@@ -1,0 +1,13 @@
+---
+- name: Deploy oVirt hosted engine
+  hosts: localhost
+  connection: local
+  vars_files:
+    - ovirt_he_staticip_vars.yml
+    - passwords.yml
+  roles:
+    - role: hosted_engine_setup
+
+  collections:
+    - ovirt.ovirt
+...
